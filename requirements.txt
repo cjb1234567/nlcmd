@@ -1,4 +1,5 @@
-openai
+pydantic-ai
+pydantic
 typer
 rich
 python-dotenv

@@ -1,19 +1,22 @@
-from openai import OpenAI
+from typing import Tuple, Optional, List, Dict, Any, Union, Literal
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
 import config
 import platform
 from skills.loader import load_skill_index, find_relevant_skills, prompt_for_discovery, prompt_for_activation
 
-from typing import Tuple, Optional
 import json
 
 class CommandGenerator:
     def __init__(self):
         if not config.OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY is not set. Please set it in .env file.")
-        client_args = {"api_key": config.OPENAI_API_KEY}
-        if config.OPENAI_BASE_URL:
-            client_args["base_url"] = config.OPENAI_BASE_URL
-        self.client = OpenAI(**client_args)
+        self.model = OpenAIChatModel(
+            config.OPENAI_MODEL,
+            api_key=config.OPENAI_API_KEY,
+            base_url=config.OPENAI_BASE_URL or None,
+        )
         self.os_name = platform.system()
         self.shell_name = config.DEFAULT_SHELL
         self.system_prompt = None
@@ -34,22 +37,11 @@ class CommandGenerator:
             {"role": "user", "content": query},
         ]
         try:
-            response = self._request_json(self.messages)
-            msg = response.choices[0].message
-            raw = (getattr(msg, "content", None) or "") or (getattr(msg, "reasoning_content", None) or "")
-            content = raw.strip()
-            self.messages.append({"role": "assistant", "content": content})
-            payload = self._parse_json(content)
+            agent = Agent(self.model, system_prompt=self.system_prompt)
+            result = agent.run(query, result_type=ResponsePayload)
+            payload = result.data if hasattr(result, "data") else result
+            self.messages.append({"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)})
             convo = self._format_conversation() if config.SHOW_REASONING else None
-            if str(payload.get("status", "error")).lower() == "error":
-                self.messages.append({"role": "user", "content": "仅返回JSON，严格遵循上述三种形态，不要任何其他文本"})
-                response = self._request_json(self.messages)
-                msg = response.choices[0].message
-                raw = (getattr(msg, "content", None) or "") or (getattr(msg, "reasoning_content", None) or "")
-                content = raw.strip()
-                self.messages.append({"role": "assistant", "content": content})
-                payload = self._parse_json(content)
-                convo = self._format_conversation() if config.SHOW_REASONING else None
             return payload, convo
         except Exception as e:
             return {"status": "error", "message": f"Error: {str(e)}"}, None
@@ -57,22 +49,11 @@ class CommandGenerator:
     def continue_structured(self, user_reply: str) -> Tuple[dict, Optional[str]]:
         self.messages.append({"role": "user", "content": user_reply})
         try:
-            response = self._request_json(self.messages)
-            msg = response.choices[0].message
-            raw = (getattr(msg, "content", None) or "") or (getattr(msg, "reasoning_content", None) or "")
-            content = raw.strip()
-            self.messages.append({"role": "assistant", "content": content})
-            payload = self._parse_json(content)
+            agent = Agent(self.model, system_prompt=self.system_prompt or self._build_system_prompt())
+            result = agent.run(user_reply, result_type=ResponsePayload)
+            payload = result.data if hasattr(result, "data") else result
+            self.messages.append({"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)})
             convo = self._format_conversation() if config.SHOW_REASONING else None
-            if str(payload.get("status", "error")).lower() == "error":
-                self.messages.append({"role": "user", "content": "仅返回JSON，严格遵循上述三种形态，不要任何其他文本"})
-                response = self._request_json(self.messages)
-                msg = response.choices[0].message
-                raw = (getattr(msg, "content", None) or "") or (getattr(msg, "reasoning_content", None) or "")
-                content = raw.strip()
-                self.messages.append({"role": "assistant", "content": content})
-                payload = self._parse_json(content)
-                convo = self._format_conversation() if config.SHOW_REASONING else None
             return payload, convo
         except Exception as e:
             return {"status": "error", "message": f"Error: {str(e)}"}, None
@@ -116,91 +97,29 @@ class CommandGenerator:
         except Exception:
             return {"status": "error", "message": "Invalid JSON returned"}
 
-    def _request_json(self, messages):
-        # Try strict JSON schema first (if provider supports), then json_object, then plain
-        schema = {
-            "name": "nlcmd_protocol",
-            "schema": {
-                "type": "object",
-                "oneOf": [
-                    {
-                        "type": "object",
-                        "properties": {
-                            "status": {"const": "execute"},
-                            "command": {"type": "string", "minLength": 1}
-                        },
-                        "required": ["status", "command"],
-                        "additionalProperties": False
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "status": {"const": "choose"},
-                            "options": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "cmd": {"type": "string", "minLength": 1},
-                                        "reason": {"type": "string"}
-                                    },
-                                    "required": ["cmd"],
-                                    "additionalProperties": False
-                                }
-                            }
-                        },
-                        "required": ["status", "options"],
-                        "additionalProperties": False
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "status": {"const": "clarify"},
-                            "questions": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {"type": "string", "minLength": 1}
-                            }
-                        },
-                        "required": ["status", "questions"],
-                        "additionalProperties": False
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "status": {"const": "tool"},
-                            "tool": {"type": "string", "minLength": 1},
-                            "args": {"type": "object"}
-                        },
-                        "required": ["status", "tool"],
-                        "additionalProperties": False
-                    }
-                ]
-            },
-            "strict": True
-        }
-        try:
-            return self.client.chat.completions.create(
-                model=config.OPENAI_MODEL,
-                messages=messages,
-                temperature=0.0,
-                max_tokens=300,
-                response_format={"type": "json_schema", "json_schema": schema},
-            )
-        except Exception:
-            try:
-                return self.client.chat.completions.create(
-                    model=config.OPENAI_MODEL,
-                    messages=messages,
-                    temperature=0.0,
-                    max_tokens=300,
-                    response_format={"type": "json_object"},
-                )
-            except Exception:
-                return self.client.chat.completions.create(
-                    model=config.OPENAI_MODEL,
-                    messages=messages,
-                    temperature=0.0,
-                    max_tokens=300,
-                )
+class ChooseOption(BaseModel):
+    cmd: str
+    reason: Optional[str] = None
+
+class ExecutePayload(BaseModel):
+    status: Literal["execute"]
+    command: str
+
+class ChoosePayload(BaseModel):
+    status: Literal["choose"]
+    options: List[ChooseOption]
+
+class ClarifyPayload(BaseModel):
+    status: Literal["clarify"]
+    questions: List[str]
+
+class ToolPayload(BaseModel):
+    status: Literal["tool"]
+    tool: str
+    args: Dict[str, Any] = Field(default_factory=dict)
+
+class ErrorPayload(BaseModel):
+    status: Literal["error"]
+    message: str
+
+ResponsePayload = Union[ExecutePayload, ChoosePayload, ClarifyPayload, ToolPayload, ErrorPayload]
