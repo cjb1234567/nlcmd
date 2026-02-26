@@ -1,13 +1,8 @@
 # Natural Language Command Executor (nlcmd)
 
-一个可把自然语言实时翻译成 Shell 命令并安全执行的跨平台控制台工具。当前实现支持结构化 JSON 协议、交互式澄清/选择、显示 AI 对话记录，并在 Windows 下优先适配 PowerShell。
+一个可把自然语言实时翻译成 Shell 命令并安全执行的跨平台控制台工具。当前实现支持交互式澄清/选择、显示 AI 对话记录，支持skills机制、并在 Windows 下优先适配 PowerShell。
 
 ## 功能概览
-- 结构化 JSON 协议：模型严格返回三种形态之一
-  - execute：{"status":"execute","command":"..."}
-  - choose：{"status":"choose","options":[{"cmd":"...","reason":"..."}, ...]}
-  - clarify：{"status":"clarify","questions":["...","..."]}
-- tool：{"status":"tool","tool":"<skill-name>","args":{...}}
 - 交互式流程：
   - 单命令执行前确认 Y/n，可选 --dry-run 只展示不执行
   - choose 场景下支持输入序号选择
@@ -18,6 +13,10 @@
 - 安全与易用：
   - 执行前展示命令并确认
   - 语法高亮与美观面板输出
+- 支持自定义技能（标准Agent Skills机制）
+  - 技能脚本解析与执行
+  - 支持 Python、PowerShell、bash、bat/cmd/exe 脚本
+  - 自动选择合适的解释器执行
 
 ## Skills（Agent Skills 规范）
 - 结构
