@@ -1,12 +1,38 @@
 from typing import Tuple, Optional, List, Dict, Any, Union, Literal
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.litellm import LiteLLMProvider
 import config
 import platform
 from skills.loader import load_skill_index, find_relevant_skills, prompt_for_discovery, prompt_for_activation
 
 import json
+
+class Deps(BaseModel):
+    os_name: str
+    shell_name: str
+    discovery: str = ""
+    matched_skills: List[Dict] = []
+    activation: str = ""
+
+def create_agent(model) -> Agent[Deps]:
+    agent = Agent(model)
+    @agent.instructions
+    def instructions(ctx: RunContext[Deps]) -> str:
+        base = (
+            "You are a helpful assistant that outputs STRICT JSON for shell command execution.\n"
+            f"The user is running on {ctx.deps.os_name} using {ctx.deps.shell_name}.\n"
+            "Respond with one of the following JSON shapes:\n"
+            "{\"status\":\"execute\",\"command\":\"<single command>\"}\n"
+            "{\"status\":\"choose\",\"options\":[{\"cmd\":\"<command>\",\"reason\":\"<short>\"},...]}\n"
+            "{\"status\":\"clarify\",\"questions\":[\"<question1>\",\"<question2>\"]}\n"
+            "{\"status\":\"tool\",\"tool\":\"<name>\",\"args\":{}}\n"
+            "Do not include markdown or code fences. Return JSON only."
+        )
+        extra = "\n".join([p for p in [ctx.deps.matched_skills, ctx.deps.activation] if p])
+        return base if not extra else f"{base}\n{extra}"
+    return agent
 
 class CommandGenerator:
     def __init__(self):
@@ -14,66 +40,49 @@ class CommandGenerator:
             raise ValueError("OPENAI_API_KEY is not set. Please set it in .env file.")
         self.model = OpenAIChatModel(
             config.OPENAI_MODEL,
-            api_key=config.OPENAI_API_KEY,
-            base_url=config.OPENAI_BASE_URL or None,
+            provider=LiteLLMProvider(
+                api_key=config.OPENAI_API_KEY,
+                api_base=config.OPENAI_BASE_URL or None,
+            ),
         )
         self.os_name = platform.system()
         self.shell_name = config.DEFAULT_SHELL
         self.system_prompt = None
         self.messages = []
+        self.agent = create_agent(self.model)
 
     # Legacy non-JSON command generation removed
 
-    def generate_structured(self, query: str) -> Tuple[dict, Optional[str]]:
-        base = self._build_system_prompt()
+    async def run_structured(self, text: str) -> Tuple[dict, Optional[str]]:
         index = load_skill_index()
         discovery = prompt_for_discovery(index)
-        matched = find_relevant_skills(query, index)
+        matched = find_relevant_skills(text, index)
         activation = prompt_for_activation(matched)
-        extra = "\n".join([p for p in [discovery, activation] if p])
-        self.system_prompt = base if not extra else f"{base}\n{extra}"
-        self.messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": query},
-        ]
-        try:
-            agent = Agent(self.model, system_prompt=self.system_prompt)
-            result = agent.run(query, result_type=ResponsePayload)
-            payload = result.data if hasattr(result, "data") else result
-            self.messages.append({"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)})
-            convo = self._format_conversation() if config.SHOW_REASONING else None
-            return payload, convo
-        except Exception as e:
-            return {"status": "error", "message": f"Error: {str(e)}"}, None
-
-    def continue_structured(self, user_reply: str) -> Tuple[dict, Optional[str]]:
-        self.messages.append({"role": "user", "content": user_reply})
-        try:
-            agent = Agent(self.model, system_prompt=self.system_prompt or self._build_system_prompt())
-            result = agent.run(user_reply, result_type=ResponsePayload)
-            payload = result.data if hasattr(result, "data") else result
-            self.messages.append({"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)})
-            convo = self._format_conversation() if config.SHOW_REASONING else None
-            return payload, convo
-        except Exception as e:
-            return {"status": "error", "message": f"Error: {str(e)}"}, None
-
-    # Legacy text command extraction removed
-
-    # Legacy command cleanup removed
-
-    # Legacy command heuristics removed
-
-    def _build_system_prompt(self) -> str:
-        return (
+        base = (
             "You are a helpful assistant that outputs STRICT JSON for shell command execution.\n"
             f"The user is running on {self.os_name} using {self.shell_name}.\n"
             "Respond with one of the following JSON shapes:\n"
             "{\"status\":\"execute\",\"command\":\"<single command>\"}\n"
             "{\"status\":\"choose\",\"options\":[{\"cmd\":\"<command>\",\"reason\":\"<short>\"},...]}\n"
             "{\"status\":\"clarify\",\"questions\":[\"<question1>\",\"<question2>\"]}\n"
+            "{\"status\":\"tool\",\"tool\":\"<name>\",\"args\":{}}\n"
             "Do not include markdown or code fences. Return JSON only."
         )
+        extra = "\n".join([p for p in [discovery, activation] if p])
+        sys_prompt = base if not extra else f"{base}\n{extra}"
+        self.system_prompt = sys_prompt
+        self.messages = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": text}]
+        try:
+            deps = Deps(os_name=self.os_name, shell_name=self.shell_name, discovery=discovery, matched_skills=matched, activation=activation)
+            result = await self.agent.run(text, output_type=ResponsePayload, deps=deps)
+            self.messages.append({"role": "assistant", "content": getattr(result, "output", None)})
+            convo = self._format_conversation() if config.SHOW_REASONING else None
+            return result, convo
+        except Exception as e:
+            return {"status": "error", "message": f"Error: {str(e)}"}, None
+
+    def _build_system_prompt(self) -> str:
+        return ""
 
 
     def _format_conversation(self) -> str:
@@ -82,20 +91,6 @@ class CommandGenerator:
             role = m["role"].capitalize()
             lines.append(f"{role}: {m['content']}")
         return "\n".join(lines)
-
-    # Legacy non-JSON conversation removed
-
-    def _parse_json(self, content: str) -> dict:
-        s = content.strip()
-        start = s.find("{")
-        end = s.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            s = s[start : end + 1]
-        try:
-            obj = json.loads(s)
-            return obj
-        except Exception:
-            return {"status": "error", "message": "Invalid JSON returned"}
 
 class ChooseOption(BaseModel):
     cmd: str
