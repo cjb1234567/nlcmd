@@ -3,6 +3,9 @@ import os
 import subprocess
 from typing import Optional
 import platform
+from skills.runner import run_skill
+from skills.loader import resolve_script
+import sys as _sys
 
 try:
     import typer
@@ -24,12 +27,48 @@ except ImportError:
 
 console = Console()
 
+def adjust_command_for_skills(cmd: str) -> str:
+    parts = cmd.split()
+    if not parts:
+        return cmd
+    for i, p in enumerate(parts):
+        token = p.strip("'\"")
+        if token.startswith("scripts/"):
+            name = os.path.splitext(os.path.basename(token))[0]
+            resolved = resolve_script(name)
+            if resolved:
+                parts[i] = f"\"{resolved}\""
+                head = parts[0].lower()
+                ext = os.path.splitext(resolved)[1].lower()
+                if ext == ".py":
+                    if head not in ("python", "py") and head != _sys.executable.lower():
+                        parts.insert(0, f"\"{_sys.executable}\"")
+                elif ext == ".ps1":
+                    if "powershell" not in head:
+                        parts = ["powershell", "-NoProfile", "-File", f"\"{resolved}\""] + parts[i+1:]
+                elif ext == ".sh":
+                    if head not in ("bash", "sh"):
+                        parts = ["bash", f"\"{resolved}\""] + parts[i+1:]
+                # .bat/.cmd/.exe: rely on shell to execute directly
+            return " ".join(parts)
+    return cmd
+
+def extract_skill_info(cmd: str):
+    parts = cmd.split()
+    for p in parts:
+        tok = p.strip("'\"")
+        if "skills" in tok and "scripts" in tok:
+            base = os.path.basename(tok)
+            stem, ext = os.path.splitext(base)
+            return stem, ext.lower()
+    return None, None
+
 def process_payload(generator: CommandGenerator, payload: dict, reasoning: Optional[str], dry_run: bool):
     status = str(payload.get("status", "error")).lower()
     if reasoning:
         console.print(Panel(reasoning, title="AI 对话记录", border_style="magenta"))
     if status == "execute":
-        cmd = str(payload.get("command", "")).strip()
+        cmd = adjust_command_for_skills(str(payload.get("command", "")).strip())
         if not cmd:
             console.print(Panel("未返回可执行命令", title="Response", border_style="yellow"))
             return
@@ -41,6 +80,7 @@ def process_payload(generator: CommandGenerator, payload: dict, reasoning: Optio
         if Confirm.ask("Do you want to execute this command?"):
             try:
                 console.print(f"[dim]Executing: {cmd}[/dim]")
+                skill_name, skill_ext = extract_skill_info(cmd)
                 if platform.system() == "Windows" and str(getattr(config, "DEFAULT_SHELL", "")).lower().find("powershell") != -1:
                     ps_cmd = " ; ".join([l.strip() for l in cmd.split("\n") if l.strip()])
                     result = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True)
@@ -48,6 +88,10 @@ def process_payload(generator: CommandGenerator, payload: dict, reasoning: Optio
                     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
                 if result.stdout:
                     console.print(Panel(result.stdout, title="Output", border_style="green"))
+                elif skill_ext == ".py" and skill_name:
+                    output = run_skill(skill_name, {})
+                    if output:
+                        console.print(Panel(output, title="Tool Output", border_style="green"))
                 if result.stderr:
                     console.print(Panel(result.stderr, title="Error Output", border_style="red"))
                 if result.returncode != 0:
@@ -93,6 +137,17 @@ def process_payload(generator: CommandGenerator, payload: dict, reasoning: Optio
             return
         new_payload, new_reasoning = generator.continue_structured(reply)
         process_payload(generator, new_payload, new_reasoning, dry_run)
+    elif status == "tool":
+        tool = str(payload.get("tool", "")).strip()
+        args = payload.get("args", {}) or {}
+        if not tool:
+            console.print(Panel("未指定工具名称", title="Response", border_style="yellow"))
+            return
+        if Confirm.ask(f"是否使用工具: {tool} ?"):
+            output = run_skill(tool, args)
+            console.print(Panel(output or "", title="Tool Output", border_style="green"))
+        else:
+            console.print("[yellow]已取消工具执行[/yellow]")
 def process_query(generator: CommandGenerator, query: str, dry_run: bool):
     with console.status("[bold green]Generating command...[/bold green]"):
         try:
@@ -110,7 +165,7 @@ def process_query(generator: CommandGenerator, query: str, dry_run: bool):
         console.print(Panel(msg, title="Response", border_style="yellow"))
         return
     if status == "execute":
-        command = str(payload.get("command", "")).strip()
+        command = adjust_command_for_skills(str(payload.get("command", "")).strip())
         if not command:
             console.print(Panel("未返回可执行命令", title="Response", border_style="yellow"))
             return
@@ -122,6 +177,7 @@ def process_query(generator: CommandGenerator, query: str, dry_run: bool):
         if Confirm.ask("Do you want to execute this command?"):
             try:
                 console.print(f"[dim]Executing: {command}[/dim]")
+                skill_name, skill_ext = extract_skill_info(command)
                 if platform.system() == "Windows" and str(getattr(config, "DEFAULT_SHELL", "")).lower().find("powershell") != -1:
                     ps_cmd = " ; ".join([l.strip() for l in command.split("\n") if l.strip()])
                     result = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True)
@@ -129,6 +185,10 @@ def process_query(generator: CommandGenerator, query: str, dry_run: bool):
                     result = subprocess.run(command, shell=True, capture_output=True, text=True)
                 if result.stdout:
                     console.print(Panel(result.stdout, title="Output", border_style="green"))
+                elif skill_ext == ".py" and skill_name:
+                    output = run_skill(skill_name, {})
+                    if output:
+                        console.print(Panel(output, title="Tool Output", border_style="green"))
                 if result.stderr:
                     console.print(Panel(result.stderr, title="Error Output", border_style="red"))
                 if result.returncode != 0:
@@ -182,6 +242,18 @@ def process_query(generator: CommandGenerator, query: str, dry_run: bool):
             console.print(Panel(msg, title="Response", border_style="yellow"))
             return
         process_payload(generator, payload, reasoning, dry_run)
+        return
+    if status == "tool":
+        tool = str(payload.get("tool", "")).strip()
+        args = payload.get("args", {}) or {}
+        if not tool:
+            console.print(Panel("未指定工具名称", title="Response", border_style="yellow"))
+            return
+        if Confirm.ask(f"是否使用工具: {tool} ?"):
+            output = run_skill(tool, args)
+            console.print(Panel(output or "", title="Tool Output", border_style="green"))
+        else:
+            console.print("[yellow]已取消工具执行[/yellow]")
         return
     msg = payload.get("message", "无法识别的返回")
     console.print(Panel(msg, title="Response", border_style="yellow"))

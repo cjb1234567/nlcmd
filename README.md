@@ -7,6 +7,7 @@
   - execute：{"status":"execute","command":"..."}
   - choose：{"status":"choose","options":[{"cmd":"...","reason":"..."}, ...]}
   - clarify：{"status":"clarify","questions":["...","..."]}
+- tool：{"status":"tool","tool":"<skill-name>","args":{...}}
 - 交互式流程：
   - 单命令执行前确认 Y/n，可选 --dry-run 只展示不执行
   - choose 场景下支持输入序号选择
@@ -17,6 +18,34 @@
 - 安全与易用：
   - 执行前展示命令并确认
   - 语法高亮与美观面板输出
+
+## Skills（Agent Skills 规范）
+- 结构
+  - 每个技能是一个文件夹，并包含 SKILL.md（必须）
+  - SKILL.md 顶部是 YAML frontmatter：
+    - name: 技能标识（必填）
+    - description: 使用场景（必填）
+    - triggers: 触发关键词列表（推荐）
+  - SKILL.md 正文是技能说明与步骤（Markdown，无固定限制）
+  - 可选子目录：
+    - scripts/: 可执行脚本（如 sysinfo.py、report.ps1、deploy.sh、tool.bat、tool.exe）
+    - references/: 参考文档
+    - assets/: 模板与资源
+- 渐进披露
+  - Discovery：启动时只读取技能的 name/description，告诉模型有哪些技能
+  - Activation：当查询匹配 triggers/description 时，把技能正文指令注入提示
+  - Execution：模型返回 {"status":"tool"} 时，终端确认后执行技能脚本或 run(args)
+- 示例
+  - [skills/sysinfo/SKILL.md](file:///c:/Users/chenjinbo/Documents/trae_projects/console/skills/sysinfo/SKILL.md)
+  - [skills/sysinfo/scripts/sysinfo.py](file:///c:/Users/chenjinbo/Documents/trae_projects/console/skills/sysinfo/scripts/sysinfo.py)
+
+## 技能脚本解析与执行
+- 当返回 execute 命令中包含 scripts/<name>.<ext>，会自动重写为技能目录中的绝对路径，并选择合适的解释器：
+  - .py：使用系统 Python 解释器
+  - .ps1：使用 PowerShell（-NoProfile -File）
+  - .sh：使用 bash
+  - .bat/.cmd/.exe：直接执行
+- 若脚本未产生 stdout，系统会尝试调用技能的 run(args) 并展示其返回结果
 
 ## 目录与关键文件
 - 主流程与 CLI：[main.py](file:///c:/Users/chenjinbo/Documents/trae_projects/console/main.py)

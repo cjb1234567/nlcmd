@@ -1,6 +1,7 @@
 from openai import OpenAI
 import config
 import platform
+from skills.loader import load_skill_index, find_relevant_skills, prompt_for_discovery, prompt_for_activation
 
 from typing import Tuple, Optional
 import json
@@ -21,7 +22,13 @@ class CommandGenerator:
     # Legacy non-JSON command generation removed
 
     def generate_structured(self, query: str) -> Tuple[dict, Optional[str]]:
-        self.system_prompt = self._build_system_prompt()
+        base = self._build_system_prompt()
+        index = load_skill_index()
+        discovery = prompt_for_discovery(index)
+        matched = find_relevant_skills(query, index)
+        activation = prompt_for_activation(matched)
+        extra = "\n".join([p for p in [discovery, activation] if p])
+        self.system_prompt = base if not extra else f"{base}\n{extra}"
         self.messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": query},
@@ -157,6 +164,16 @@ class CommandGenerator:
                             }
                         },
                         "required": ["status", "questions"],
+                        "additionalProperties": False
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "status": {"const": "tool"},
+                            "tool": {"type": "string", "minLength": 1},
+                            "args": {"type": "object"}
+                        },
+                        "required": ["status", "tool"],
                         "additionalProperties": False
                     }
                 ]
