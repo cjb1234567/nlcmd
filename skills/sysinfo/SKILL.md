@@ -13,7 +13,7 @@ triggers:
 - 当用户希望查看当前机器的基础信息（OS、版本、CPU、Python版本）。
 
 ## 执行方法
-- 使用内置脚本 scripts/sysinfo.py 的 run(args) 执行。
+- 在命令行中运行: `python skills/sysinfo/scripts/sysinfo.py`
 - 不需要任何参数。
 
 ## 输出

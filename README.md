@@ -31,7 +31,7 @@
     - `references/`: 参考文档
     - `assets/`: 模板与资源
 - **示例**
-  - [skills/sysinfo/SKILL.md](file:///c:/Users/chenjinbo/Documents/trae_projects/console/skills/sysinfo/SKILL.md)
+  - [skills/sysinfo/SKILL.md](skills/sysinfo/SKILL.md)
 
 ## 技能脚本解析与执行
 当返回 execute 命令中包含 `scripts/<name>.<ext>`，自动重写为技能目录中的绝对路径：
@@ -40,25 +40,56 @@
 - `.sh`：使用 bash
 - `.bat/.cmd/.exe`：直接执行
 
-## 目录与关键文件
-- **主入口**：[main.py](file:///c:/Users/chenjinbo/Documents/trae_projects/console/main.py)
-- **Agent 定义**：[llm.py](file:///c:/Users/chenjinbo/Documents/trae_projects/console/llm.py)
-  - `CommandGenerator` 类：Agent 封装
-  - `run_shell_command` 工具：执行单命令
-  - `propose_options` 工具：多选项选择
-- **配置**：[config.py](file:///c:/Users/chenjinbo/Documents/trae_projects/console/config.py)
-- **命令执行**：[utils.py](file:///c:/Users/chenjinbo/Documents/trae_projects/console/utils.py)
-  - `run_shell_command_with_confirmation`: 带确认的命令执行
-  - `_ensure_workspace_dir`: 工作目录检查与创建
-  - `WorkspaceError`: 工作目录异常
+## 项目结构
+```
+nlcmd/
+├── src/
+│   └── nlcmd/           # 主包
+│       ├── __init__.py  # 包入口
+│       ├── main.py      # CLI 入口
+│       ├── llm.py       # Agent 定义
+│       ├── config.py    # 配置管理
+│       ├── utils.py     # 命令执行
+│       └── ui.py        # 控制台输出
+├── skills/              # 技能目录
+│   ├── canvas-design/   # Canvas 设计技能
+│   ├── docx/            # Word 文档技能
+│   └── sysinfo/         # 系统信息技能
+├── workspace/           # 工作目录（自动创建）
+├── pyproject.toml       # 项目配置
+├── uv.lock              # 依赖锁定
+├── .env.example         # 环境变量示例
+└── README.md
+```
 
 ## 环境要求
-- Python 3.9+
+- Python 3.10+
+- uv (推荐)
 - 可访问的 OpenAI 兼容接口
 
-## 安装
+## 安装与开发
+
+**方式一：使用 uv（推荐）**
+
+1. 安装 uv（如果尚未安装）：
+   ```bash
+   pip install uv
+   ```
+
+2. 同步依赖环境：
+   ```bash
+   uv sync
+   ```
+
+3. 运行命令：
+   ```bash
+   uv run nlcmd "查看当前目录下各文件夹大小"
+   ```
+
+**方式二：传统 pip 安装**
+
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 复制 `.env.example` 为 `.env`，填写配置。
@@ -75,19 +106,28 @@ pip install -r requirements.txt
 | WORKSPACE | 工作目录 | ./workspace |
 
 ## 使用
-**单次查询**：
+
+**方式一：通过 uv 运行（推荐）**
 ```bash
-python main.py "查看当前目录下各文件夹大小"
+# 单次执行
+uv run nlcmd "查看当前目录下各文件夹大小"
+
+# 交互模式
+uv run nlcmd -i
+
+# Dry-run 模式（只展示不执行）
+uv run nlcmd "删除所有文件" --dry-run
 ```
 
-**交互模式**：
+**方式二：激活虚拟环境后运行**
 ```bash
-python main.py -i
-```
+# Windows
+.venv\Scripts\activate
+nlcmd "查看当前目录下各文件夹大小"
 
-**Dry-run 模式**（只展示命令，不执行）：
-```bash
-python main.py "列出文件" --dry-run
+# Linux/macOS
+source .venv/bin/activate
+nlcmd "查看当前目录下各文件夹大小"
 ```
 
 ## 工作目录说明
@@ -96,16 +136,29 @@ python main.py "列出文件" --dry-run
 - 目录不存在时自动创建
 - 创建失败（权限不足/路径无效）时中断执行并报错
 
+## 开发
+
+**环境准备**：
+```bash
+# 同步依赖（包含开发依赖）
+uv sync --extra dev
+```
+
+**代码格式化与检查**：
+```bash
+uv run black src/
+uv run ruff check src/
+```
+
+**打包发布**：
+```bash
+uv build
+```
+
 ## 常见问题
 - **命令执行失败**：检查 workspace 目录是否存在且有权限
 - **PowerShell 语法问题**：系统提示已包含 PowerShell 语法规则
 - **无法得到明确命令**：补充更多细节或使用交互模式
-
-## 打包与发布
-```bash
-pip install pyinstaller
-pyinstaller --onefile --name nlcmd main.py
-```
 
 ## 风险与安全
 - API Key 通过环境变量或 `.env` 提供，避免硬编码

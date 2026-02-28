@@ -10,3 +10,6 @@ def run(args: dict) -> str:
         f"Python: {sys.version.split()[0]}"
     ]
     return "\n".join(items)
+
+if __name__ == "__main__":
+    print(run({}))
