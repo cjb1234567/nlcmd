@@ -31,7 +31,7 @@ def build_system_prompt(deps: AgentState) -> str:
         f"The user is running on {deps.os_name} using {deps.shell_name}.\n"
         f"The user's workspace directory is: {deps.workspace}\n"
         "All file operations should be relative to this workspace unless an absolute path is specified.\n"
-        "You have access to tools to execute shell commands ('run_shell_command'), propose options ('propose_options'), and manage skills.\n"
+        "You have access to tools to execute shell commands ('run_shell_command'), propose options ('propose_options'), write files ('write_file'), and manage skills.\n"
         "Workflow:\n"
         "1. Analyze the user's request.\n"
         "2. If the request is clear and simple -> Call `run_shell_command` directly.\n"
@@ -49,10 +49,7 @@ def build_system_prompt(deps: AgentState) -> str:
             "\n## PowerShell-Specific Rules:\n"
             "- To OPEN a file in the default app: `Invoke-Item 'filename'` or `start 'filename'`.\n"
             "- NEVER use bash syntax like `cat > file << 'EOF'` or `<<EOF` - these do NOT work in PowerShell\n"
-            "- To create a file with content in PowerShell, use one of these methods:\n"
-            "  1. For small files: `Set-Content -Path 'file.txt' -Value 'content'`\n"
-            "  2. For multi-line files: Use `@'...'@` here-string: `$content = @'\nline1\nline2\n'@; $content | Out-File -FilePath 'file.txt' -Encoding utf8`\n"
-            "  3. Use Python for complex file creation: `python -c \"code\"`\n"
+            "- To create a file with content, PREFER using the `write_file` tool instead of shell commands like `echo` or `Set-Content`.\n"
             "- Use `;` to separate commands (not `&&`)\n"
             "- Use `$env:VAR` for environment variables (not `$VAR`)\n"
         )
@@ -88,6 +85,39 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
             return run_shell_command_with_confirmation(command, dry_run=ctx.deps.dry_run, cwd=ctx.deps.workspace)
         except WorkspaceError:
             raise
+
+    @agent.tool
+    def write_file(ctx: RunContext[AgentState], filepath: str, content: str) -> str:
+        """
+        Write content to a file directly WITHOUT asking for user confirmation.
+        Use this tool for:
+        1. Creating temporary files needed for intermediate steps.
+        2. Creating new files when the user explicitly asks to "create a file with content".
+        3. Overwriting files if necessary (be careful).
+        
+        The filepath is relative to the workspace.
+        """
+        try:
+            # Construct absolute path relative to workspace
+            workspace_path = Path(ctx.deps.workspace).resolve()
+            full_path = (workspace_path / filepath).resolve()
+            
+            # Security check: Ensure the file is within the workspace
+            if not str(full_path).startswith(str(workspace_path)):
+                 return f"Error: Access denied. Cannot write to {filepath} outside of workspace {workspace_path}."
+
+            if ctx.deps.dry_run:
+                return f"[Dry Run] Would write to {filepath}:\n{truncate_content(content, 100)}"
+            
+            # Ensure parent directory exists
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(full_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            return f"Successfully wrote {len(content)} characters to {filepath}"
+        except Exception as e:
+            return f"Error writing file: {str(e)}"
 
     @agent.tool
     def propose_options(ctx: RunContext[AgentState], options: List[Dict[str, str]]) -> str:
