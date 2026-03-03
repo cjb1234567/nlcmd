@@ -1,8 +1,12 @@
 # Natural Language Command Executor (nlcmd)
 
-一个把自然语言实时翻译成 Shell 命令并安全执行的跨平台控制台工具。基于 pydantic-ai Agent 框架，支持交互式命令确认、自定义技能（Skills）、工作目录管理，并在 Windows 下优先适配 PowerShell。
+一个把自然语言实时翻译成 Shell 命令并安全执行的跨平台控制台工具。基于 pydantic-ai Agent 框架，**内置语义记忆系统**，支持交互式命令确认、自定义技能（Skills）、工作目录管理，并在 Windows 下优先适配 PowerShell。
 
 ## 功能概览
+- **语义记忆系统 (Semantic Memory)**：
+  - **持久化存储**：重要信息自动记录为 Markdown 文件，方便查阅。
+  - **语义检索**：基于 `txtai` 和 `BAAI/bge-small-zh` 模型，支持自然语言模糊检索历史记忆。
+  - **上下文保持**：自动记住用户偏好、常用配置和重要上下文，提升多轮交互体验。
 - **交互式流程**：
   - 单命令执行前确认 Y/n，可选 `--dry-run` 只展示不执行
   - 多选项场景支持输入序号选择
@@ -170,3 +174,28 @@ uv build
 
 ## 许可
 MIT License
+
+## 更新日志
+
+### 2026-03-02：记忆系统升级 (Memory System Upgrade)
+
+- **语义记忆 (Semantic Memory)**
+  - 集成 `txtai` 引擎，使用 `BAAI/bge-small-zh-v1.5` 模型提供中文语义向量支持。
+  - 实现混合检索（Hybrid Search），结合 BM25 关键词匹配与向量语义检索，提升记忆召回准确率。
+
+- **结构化存储 (Structured Storage)**
+  - 实现 `MemoryStore` 类，采用双重存储策略：
+    - **可读存储**：Markdown 文件按类别存放在 `workspace/memory/{category}/`。
+    - **索引存储**：`txtai` 向量索引存放在 `workspace/memory/index/`。
+
+- **新增工具 (New Tools)**
+  - `save_memory`: 保存记忆到 Markdown 文件，并自动增量更新向量索引。
+  - `recall_memory`: 支持通过自然语言查询相关记忆，返回内容及元数据（如时间、类别）。
+  - `list_memories`: 列出当前已有的记忆分类，辅助 Agent 进行分类管理。
+
+- **修复与优化**
+  - 修复了索引目录未自动创建导致持久化失败的问题。
+  - 优化了元数据存储结构，解决了 `txtai` 默认不支持字典类型元数据的问题。
+
+- **依赖更新**
+  - 新增 `txtai>=7.0.0` 及相关依赖。

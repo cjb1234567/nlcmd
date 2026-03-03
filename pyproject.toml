@@ -32,6 +32,9 @@ dependencies = [
     "rich>=14.3.3",
     "python-dotenv>=1.2.1",
     "pydantic-ai-skills>=0.5.0",
+    "logfire>=4.25.0",
+    "pydantic-eval>=0.0.1",
+    "txtai>=7.0.0",
 ]
 
 [project.optional-dependencies]
