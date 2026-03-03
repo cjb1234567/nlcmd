@@ -77,7 +77,15 @@ def cli(
                 console.print(f"Error: {e}", markup=False)
 
 def main():
-    typer.run(cli)
+    if len(sys.argv) > 1 and sys.argv[1] == "cron":
+        from nlcmd.cron.cli import cron_app, cron_interactive
+        if len(sys.argv) == 2:
+            cron_interactive()
+        else:
+            sys.argv = [sys.argv[0]] + sys.argv[2:]
+            cron_app()
+    else:
+        typer.run(cli)
 
 if __name__ == "__main__":
     main()

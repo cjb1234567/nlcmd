@@ -177,6 +177,19 @@ MIT License
 
 ## 更新日志
 
+### 2026-03-04：稳定性与体验优化
+
+- **数据库并发优化**
+  - 启用 SQLite WAL 模式，解决 "database is locked" 错误
+  - 增加重试机制，提升索引写入稳定性
+
+- **时间感知增强**
+  - 系统提示中添加当前日期时间，LLM 能正确识别"今天"
+  - `recall_memory` 返回结果中包含记忆的日期时间元数据
+
+- **Bug 修复**
+  - 修复 `anyio.Path.resolve()` 缺少 `await` 导致的协程错误
+
 ### 2026-03-02：记忆系统升级 (Memory System Upgrade)
 
 - **语义记忆 (Semantic Memory)**

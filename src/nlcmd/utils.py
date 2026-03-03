@@ -3,7 +3,7 @@ import sys
 import re
 import tempfile
 import platform
-import subprocess
+import asyncio
 from pathlib import Path
 from rich.syntax import Syntax
 from rich.panel import Panel
@@ -79,8 +79,8 @@ def prepare_shell_command(cmd: str) -> tuple[str, str, str]:
     cmd, cleanup_path = transform_python_c(cmd)
     return cmd, cmd, cleanup_path
 
-def execute_prepared_command(cmd: str, cleanup_path: str = None, cwd: str = None) -> str:
-    """Execute a previously prepared shell command."""
+async def execute_prepared_command_async(cmd: str, cleanup_path: str = None, cwd: str = None) -> str:
+    """Execute a previously prepared shell command asynchronously using asyncio.subprocess."""
     try:
         work_dir = _ensure_workspace_dir(cwd)
         console.print(f"[dim]Executing: {cmd}[/dim]")
@@ -88,25 +88,24 @@ def execute_prepared_command(cmd: str, cleanup_path: str = None, cwd: str = None
         
         if platform.system() == "Windows" and str(getattr(config, "DEFAULT_SHELL", "")).lower().find("powershell") != -1:
             ps_cmd = build_powershell_command(cmd)
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_cmd],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+            process = await asyncio.create_subprocess_shell(
+                f'powershell -NoProfile -Command "{ps_cmd}"',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=work_dir,
             )
         else:
-            result = subprocess.run(
+            process = await asyncio.create_subprocess_shell(
                 cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=work_dir,
             )
-            
+        
+        stdout_bytes, stderr_bytes = await process.communicate()
+        stdout = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else ""
+        stderr = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ""
+        
         if cleanup_path and os.path.isfile(cleanup_path):
             try:
                 os.remove(cleanup_path)
@@ -114,17 +113,17 @@ def execute_prepared_command(cmd: str, cleanup_path: str = None, cwd: str = None
                 pass
                 
         output_parts = []
-        if result.stdout:
-            console.print(Panel(result.stdout, title="Output", border_style="green"))
-            output_parts.append(f"Stdout:\n{result.stdout}")
+        if stdout:
+            console.print(Panel(stdout, title="Output", border_style="green"))
+            output_parts.append(f"Stdout:\n{stdout}")
                 
-        if result.stderr:
-            console.print(Panel(result.stderr, title="Error Output", border_style="red"))
-            output_parts.append(f"Stderr:\n{result.stderr}")
+        if stderr:
+            console.print(Panel(stderr, title="Error Output", border_style="red"))
+            output_parts.append(f"Stderr:\n{stderr}")
             
-        if result.returncode != 0:
-            console.print(f"[bold red]Command failed with exit code {result.returncode}[/bold red]")
-            output_parts.append(f"Exit Code: {result.returncode}")
+        if process.returncode != 0:
+            console.print(f"[bold red]Command failed with exit code {process.returncode}[/bold red]")
+            output_parts.append(f"Exit Code: {process.returncode}")
         else:
             console.print("[bold green]Command executed successfully![/bold green]")
             
@@ -134,9 +133,13 @@ def execute_prepared_command(cmd: str, cleanup_path: str = None, cwd: str = None
         console.print(f"[bold red]Execution failed:[/bold red] {e}")
         return f"Error: {str(e)}"
 
-def run_shell_command_with_confirmation(cmd: str, dry_run: bool = False, cwd: str = None) -> str:
+def execute_prepared_command(cmd: str, cleanup_path: str = None, cwd: str = None) -> str:
+    """Execute a previously prepared shell command (synchronous wrapper for backward compatibility)."""
+    return asyncio.run(execute_prepared_command_async(cmd, cleanup_path, cwd))
+
+async def run_shell_command_with_confirmation_async(cmd: str, dry_run: bool = False, cwd: str = None) -> str:
     """
-    Run a shell command with user confirmation.
+    Run a shell command with user confirmation (async version).
     Args:
         cmd: The command to execute
         dry_run: If True, only show the command without executing
@@ -161,7 +164,7 @@ def run_shell_command_with_confirmation(cmd: str, dry_run: bool = False, cwd: st
         
     try:
         if Confirm.ask("Do you want to execute this command?"):
-            return execute_prepared_command(exec_cmd, cleanup, cwd=work_dir)
+            return await execute_prepared_command_async(exec_cmd, cleanup, cwd=work_dir)
         else:
             console.print("[yellow]Execution cancelled.[/yellow]")
             return "Execution cancelled by user"
@@ -170,6 +173,18 @@ def run_shell_command_with_confirmation(cmd: str, dry_run: bool = False, cwd: st
     except Exception as e:
         console.print(f"[bold red]Execution failed:[/bold red] {e}")
         return f"Error: {str(e)}"
+
+def run_shell_command_with_confirmation(cmd: str, dry_run: bool = False, cwd: str = None) -> str:
+    """
+    Run a shell command with user confirmation (synchronous wrapper for backward compatibility).
+    Args:
+        cmd: The command to execute
+        dry_run: If True, only show the command without executing
+        cwd: Working directory for command execution (defaults to config.WORKSPACE)
+    Raises:
+        WorkspaceError: If workspace directory cannot be created or accessed
+    """
+    return asyncio.run(run_shell_command_with_confirmation_async(cmd, dry_run, cwd))
 
 def execute_shell_command(cmd: str, dry_run: bool = False, cwd: str = None) -> str:
     """

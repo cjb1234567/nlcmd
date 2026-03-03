@@ -1,5 +1,6 @@
 from typing import Tuple, Optional, Any, Callable, List, Dict, Literal
 from datetime import datetime
+import anyio
 from pydantic import BaseModel
 from pydantic_ai import Agent, CallToolsNode, ModelRequestNode, RunContext, ToolReturnPart
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -10,9 +11,9 @@ from pydantic_ai_skills import SkillsToolset
 from rich.panel import Panel
 
 from nlcmd import config
-from nlcmd.utils import run_shell_command_with_confirmation, WorkspaceError
+from nlcmd.utils import WorkspaceError, run_shell_command_with_confirmation_async
 from nlcmd.ui import console
-from nlcmd.memory import MemoryStore
+from nlcmd.memory import MemoryIndexer
 
 import logfire
 
@@ -31,26 +32,34 @@ class AgentState(BaseModel):
     shell_name: str
     dry_run: bool = False
     workspace: str = ""
-    memory_store: Any = None  # Holds the MemoryStore instance
+    memory_indexer: Any = None
 
 def build_system_prompt(deps: AgentState) -> str:
+    now = datetime.now()
     base = (
         "You are a helpful assistant for task execution.\n"
         f"The user is running on {deps.os_name} using {deps.shell_name}.\n"
         f"The user's workspace directory is: {deps.workspace}\n"
+        f"Current date and time: {now.strftime('%Y-%m-%d %H:%M:%S')} ({now.strftime('%A')})\n"
         "All file operations should be relative to this workspace unless an absolute path is specified.\n"
         "You have access to tools to execute shell commands ('run_shell_command'), propose options ('propose_options'), write files ('write_file'), save memories ('save_memory'), recall memories ('recall_memory'), and manage skills.\n"
         "Workflow:\n"
         "1. Analyze the user's request.\n"
-        "2. If the request is clear and simple -> Call `run_shell_command` directly.\n"
-        "3. If the request is ambiguous -> Call `propose_options` with possible commands.\n"
-        "4. If the request is vague -> Ask the user for clarification (text response).\n"
-        "5. If a skill is relevant -> Use `load_skill` and follow the skill instructions.\n"
-        "6. To save a memory:\n"
+        "2. If the request references people, preferences, or past context -> Call `recall_memory` FIRST to check if relevant information exists.\n"
+        "3. If the request is clear and simple -> Call `run_shell_command` directly.\n"
+        "4. If the request is ambiguous -> Call `propose_options` with possible commands.\n"
+        "5. If the request is still vague after checking memory -> Ask the user for clarification (text response).\n"
+        "6. If a skill is relevant -> Use `load_skill` and follow the skill instructions.\n"
+        "7. To save a memory:\n"
         "   a. Call `list_memories` to check existing categories.\n"
-        "   b. Call `save_memory` to append to an existing category OR create a new one.\n"
-        "7. To recall a memory -> Call `recall_memory` with a relevant query.\n"
+        "   b. Call `save_memory` to append to an existing category(preferrably) OR create a new one.\n"
+        "8. To recall a memory -> Call `recall_memory` with a relevant query.\n"
         "IMPORTANT: When calling a tool, do NOT output any conversational text. Just call the tool.\n"
+        "\n## Memory-First Policy:\n"
+        "- When the user mentions specific people (like '恩师', '老师', '朋友') that haven't been mentioned before, preferences, or personal context, ALWAYS call `recall_memory` first.\n"
+        "- Do NOT ask the user for information that might already be stored in memory.\n"
+        "- If recall_memory returns relevant results, use that information.\n"
+        "- Only ask for clarification if recall_memory returns no useful information.\n"
         "\n## File Operations:\n"
         "- OPEN vs READ: If the user says 'open [file]', they usually mean 'launch in default application'. Use `start [file]` or `Invoke-Item [file]` (Windows).\n"
         "- Only use specialized skills (like docx/pandoc) if the user asks to 'read content', 'extract text', 'summarize', or 'analyze' the file.\n"
@@ -88,19 +97,23 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
         return await skills_toolset.get_instructions(ctx)
 
     @agent.tool
-    def run_shell_command(ctx: RunContext[AgentState], command: str) -> str:
+    async def run_shell_command(ctx: RunContext[AgentState], command: str) -> str:
         """
         Execute a shell command directly. Use this when the user's intent is clear and a single command can solve it.
         This tool will ask for user confirmation before execution.
         Raises WorkspaceError if workspace directory cannot be created or accessed.
         """
         try:
-            return run_shell_command_with_confirmation(command, dry_run=ctx.deps.dry_run, cwd=ctx.deps.workspace)
+            return await run_shell_command_with_confirmation_async(
+                command,
+                dry_run=ctx.deps.dry_run,
+                cwd=ctx.deps.workspace
+            )
         except WorkspaceError:
             raise
 
     @agent.tool
-    def write_file(ctx: RunContext[AgentState], filepath: str, content: str) -> str:
+    async def write_file(ctx: RunContext[AgentState], filepath: str, content: str) -> str:
         """
         Write content to a file directly WITHOUT asking for user confirmation.
         Use this tool for:
@@ -111,29 +124,26 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
         The filepath is relative to the workspace.
         """
         try:
-            # Construct absolute path relative to workspace
-            workspace_path = Path(ctx.deps.workspace).resolve()
+            workspace_path = await anyio.Path(ctx.deps.workspace).resolve()
             full_path = (workspace_path / filepath).resolve()
             
-            # Security check: Ensure the file is within the workspace
             if not str(full_path).startswith(str(workspace_path)):
-                 return f"Error: Access denied. Cannot write to {filepath} outside of workspace {workspace_path}."
-
+                return f"Error: Access denied. Cannot write to {filepath} outside of workspace {workspace_path}."
+            
             if ctx.deps.dry_run:
                 return f"[Dry Run] Would write to {filepath}:\n{truncate_content(content, 100)}"
             
-            # Ensure parent directory exists
-            full_path.parent.mkdir(parents=True, exist_ok=True)
+            await full_path.parent.mkdir(parents=True, exist_ok=True)
             
-            with open(full_path, 'w', encoding='utf-8') as f:
-                f.write(content)
+            async with await anyio.open_file(full_path, 'w', encoding='utf-8') as f:
+                await f.write(content)
             
             return f"Successfully wrote {len(content)} characters to {filepath}"
         except Exception as e:
             return f"Error writing file: {str(e)}"
 
     @agent.tool
-    def list_memories(ctx: RunContext[AgentState], memory_type: Literal["important", "normal"]) -> str:
+    async def list_memories(ctx: RunContext[AgentState], memory_type: Literal["important", "normal"]) -> str:
         """
         List existing memory files for a specific type (important/normal).
         Use this BEFORE saving a new memory to check if a relevant memory file already exists.
@@ -142,18 +152,17 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
             A list of strings formatted as "filename: [description extracted from metadata]"
         """
         try:
-            workspace_path = Path(ctx.deps.workspace).resolve()
+            workspace_path = await anyio.Path(ctx.deps.workspace).resolve()
             memory_dir = workspace_path / "memory" / memory_type
             
-            if not memory_dir.exists():
+            if not await memory_dir.exists():
                 return "No existing memories found."
             
             memories = []
-            for file_path in memory_dir.glob("*.md"):
+            async for file_path in memory_dir.glob("*.md"):
                 try:
-                    content = file_path.read_text(encoding='utf-8')
+                    content = await file_path.read_text(encoding='utf-8')
                     description = "No description"
-                    # Try to extract description from metadata
                     for line in content.splitlines():
                         if line.lower().startswith("description:"):
                             description = line.split(":", 1)[1].strip()
@@ -170,7 +179,7 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
             return f"Error listing memories: {str(e)}"
 
     @agent.tool
-    def save_memory(ctx: RunContext[AgentState], content: str, memory_type: Literal["important", "normal"], category_name: str, description: str = "") -> str:
+    async def save_memory(ctx: RunContext[AgentState], content: str, memory_type: Literal["important", "normal"], category_name: str, description: str = "") -> str:
         """
         Save a memory about the user or task.
         
@@ -187,12 +196,10 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
             description: Description of this memory category (required only when creating a NEW file).
         """
         try:
-            # Determine directory based on type
-            workspace_path = Path(ctx.deps.workspace).resolve()
+            workspace_path = await anyio.Path(ctx.deps.workspace).resolve()
             memory_dir = workspace_path / "memory" / memory_type
-            memory_dir.mkdir(parents=True, exist_ok=True)
+            await memory_dir.mkdir(parents=True, exist_ok=True)
             
-            # Sanitize category_name to be safe for filenames
             safe_name = "".join(c for c in category_name if c.isalnum() or c in ('_', '-')).strip()
             if not safe_name:
                 return "Error: Invalid category_name"
@@ -200,26 +207,21 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
             filename = f"{safe_name}.md"
             file_path = memory_dir / filename
             
-            is_new_file = not file_path.exists()
+            is_new_file = not await file_path.exists()
             today = datetime.now().strftime("%Y-%m-%d")
             timestamp = datetime.now().strftime("%H:%M:%S")
             
-            # Prepare full entry content
             entry_header = f"### [{today} {timestamp}]"
             full_entry = f"{entry_header}\n{content}\n\n"
             
-            with open(file_path, 'a', encoding='utf-8') as f:
+            async with await anyio.open_file(file_path, 'a', encoding='utf-8') as f:
                 if is_new_file:
                     if not description:
                         description = f"Memories related to {safe_name}"
-                    # Write metadata header
-                    f.write(f"---\nName: {safe_name}\nDescription: {description}\nCreated: {today}\n---\n\n")
-                
-                # Append new memory
-                f.write(full_entry)
+                    await f.write(f"---\nName: {safe_name}\nDescription: {description}\nCreated: {today}\n---\n\n")
+                await f.write(full_entry)
             
-            # Update search index
-            if ctx.deps.memory_store:
+            if ctx.deps.memory_indexer:
                 try:
                     metadata = {
                         "filename": filename,
@@ -227,7 +229,7 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
                         "category": safe_name,
                         "timestamp": f"{today} {timestamp}"
                     }
-                    ctx.deps.memory_store.index_memory(full_entry, metadata)
+                    await ctx.deps.memory_indexer.index_memory_async(full_entry, metadata)
                 except Exception as e:
                     return f"Memory saved to file, but indexing failed: {str(e)}"
 
@@ -238,7 +240,7 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
             return f"Error saving memory: {str(e)}"
 
     @agent.tool
-    def recall_memory(ctx: RunContext[AgentState], query: str, limit: int = 5) -> str:
+    async def recall_memory(ctx: RunContext[AgentState], query: str, limit: int = 5) -> str:
         """
         Recall memories related to a specific query using semantic search.
         Use this when you need to remember past interactions, user preferences, or project context.
@@ -250,11 +252,11 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
         Returns:
             A formatted string containing relevant memory snippets.
         """
-        if not ctx.deps.memory_store:
+        if not ctx.deps.memory_indexer:
             return "Memory search is not available (txtai dependency missing or initialization failed)."
             
         try:
-            results = ctx.deps.memory_store.search(query, limit)
+            results = await ctx.deps.memory_indexer.search_async(query, limit)
             if not results:
                 return f"No memories found for query: '{query}'"
             
@@ -264,14 +266,18 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
                 text = res.get('text', '').strip()
                 meta = res.get('metadata', {})
                 category = meta.get('category', 'unknown')
-                formatted_results.append(f"Result {i+1} (Score: {score:.2f}) [{category}]:\n{text}\n---")
+                date_str = meta.get('date', '')
+                time_str = meta.get('time', '')
+                datetime_info = f" {date_str} {time_str}".strip()
+                datetime_part = f" [{datetime_info}]" if datetime_info else ""
+                formatted_results.append(f"Result {i+1} (Score: {score:.2f}) [{category}]{datetime_part}:\n{text}\n---")
                 
             return "\n".join(formatted_results)
         except Exception as e:
             return f"Error recalling memory: {str(e)}"
 
     @agent.tool
-    def propose_options(ctx: RunContext[AgentState], options: List[Dict[str, str]]) -> str:
+    async def propose_options(ctx: RunContext[AgentState], options: List[Dict[str, str]]) -> str:
         """
         Propose multiple command options to the user when the request is ambiguous.
         options: List of dicts with 'command' and 'description'.
@@ -282,7 +288,9 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
         for i, opt in enumerate(options):
             console.print(f"{i+1}. [bold cyan]{opt['command']}[/bold cyan] - {opt['description']}")
         
-        choice = console.input("[bold yellow]Enter number (or 'c' to cancel): [/bold yellow]")
+        choice = await anyio.to_thread.run_sync(
+            lambda: console.input("[bold yellow]Enter number (or 'c' to cancel): [/bold yellow]")
+        )
         if choice.lower() == 'c':
             return "User cancelled selection."
         
@@ -290,7 +298,11 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
             idx = int(choice) - 1
             if 0 <= idx < len(options):
                 selected_cmd = options[idx]['command']
-                return run_shell_command_with_confirmation(selected_cmd, dry_run=ctx.deps.dry_run, cwd=ctx.deps.workspace)
+                return await run_shell_command_with_confirmation_async(
+                    selected_cmd,
+                    dry_run=ctx.deps.dry_run,
+                    cwd=ctx.deps.workspace
+                )
             else:
                 return "Invalid selection."
         except ValueError:
@@ -315,29 +327,28 @@ class CommandGenerator:
         self.shell_name = config.DEFAULT_SHELL
         self.workspace = workspace or str(config.WORKSPACE)
 
-
         self.agent, self.skills_toolset = create_agent(self.model)
         self.message_history = []
 
     async def run_task(self, text: str, dry_run: bool = False, reasoning_callback: Optional[Callable[[str], None]] = None) -> Any:
-        # Initialize memory store
-        memory_store = None
+        memory_indexer = None
         try:
-            memory_store = MemoryStore(self.workspace)
+            index_path = Path(self.workspace) / "memory" / "index"
+            memory_indexer = MemoryIndexer(index_path)
         except Exception as e:
             if config.SHOW_REASONING and reasoning_callback:
-                reasoning_callback(f"\n[yellow]Warning: Memory store initialization failed: {e}[/yellow]\n")
+                reasoning_callback(f"\n[yellow]Warning: Memory indexer initialization failed: {e}[/yellow]\n")
 
         deps = AgentState(
             os_name=self.os_name, 
             shell_name=self.shell_name, 
             dry_run=dry_run,
             workspace=self.workspace,
-            memory_store=memory_store
+            memory_indexer=memory_indexer
         )
         try:
             if config.SHOW_REASONING and reasoning_callback:
-                reasoning_callback("Generating system prompt...\n")   
+                reasoning_callback("Generating system prompt...\n")
             full_response = ""
             with logfire.span("agent_execution", prompt_version="v2"):
                 async with self.agent.iter(text, deps=deps, message_history=self.message_history[-4:]) as run:
