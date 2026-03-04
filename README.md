@@ -179,6 +179,16 @@ MIT License
 
 ### 2026-03-04：稳定性与体验优化
 
+- **全异步化改造**
+  - 所有 LLM 工具方法改为 `async def`，保证 API 一致性
+  - 使用 `anyio.Path` 和 `anyio.open_file()` 进行异步文件操作
+  - 使用 `asyncio.create_subprocess_shell` 替代 `subprocess.run` 实现原生异步命令执行
+  - 使用 `anyio.to_thread.run_sync()` 处理同步用户输入
+
+- **索引串行化**
+  - `MemoryIndexer` 添加 `asyncio.Lock`，保证索引操作串行化
+  - 提供 `search_async()`、`index_memory_async()` 异步接口
+
 - **数据库并发优化**
   - 启用 SQLite WAL 模式，解决 "database is locked" 错误
   - 增加重试机制，提升索引写入稳定性
@@ -189,6 +199,9 @@ MIT License
 
 - **Bug 修复**
   - 修复 `anyio.Path.resolve()` 缺少 `await` 导致的协程错误
+
+- **依赖更新**
+  - 新增 `anyio>=3.7.0`，为 FastAPI 生态做准备
 
 ### 2026-03-02：记忆系统升级 (Memory System Upgrade)
 
