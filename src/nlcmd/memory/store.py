@@ -49,7 +49,7 @@ class MemoryStore:
 
     def reindex_all(self, indexer: MemoryIndexer):
         documents = []
-        for memory_type in ["important", "normal"]:
+        for memory_type in ["important", "temp"]:
             type_dir = self.memory_root / memory_type
             if not type_dir.exists():
                 continue
@@ -68,7 +68,8 @@ class MemoryStore:
                             "type": memory_type,
                             "category": category
                         }
-                        documents.append((uid, full_entry, metadata))
+                        data = {"text": full_entry, **metadata}
+                        documents.append((uid, data, None))
                         
                 except Exception as e:
                     print(f"Error reading {file_path}: {e}")

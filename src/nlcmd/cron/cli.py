@@ -1,39 +1,76 @@
 import asyncio
 import typer
+from typing import Optional
 from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
 
 from nlcmd.ui import console
 from nlcmd.cron.scheduler import TaskManager, start_scheduler
+from nlcmd.cron.tasks import TASK_FUNCS
 
-cron_app = typer.Typer(help="Manage scheduled thinking tasks")
+cron_app = typer.Typer(help="Manage scheduled tasks")
 
-@cron_app.command("start")
-def cron_start():
-    """Start the scheduler to run thinking tasks."""
-    asyncio.run(start_scheduler())
+TASK_CHOICES = {
+    "1": "run_thinking_agent",
+    "2": "run_reindexing",
+}
+
+
+def _get_task_params(func_name: str) -> dict:
+    if func_name == "run_thinking_agent":
+        prompt = Prompt.ask("[cyan]Prompt[/cyan]")
+        return {"prompt": prompt}
+    elif func_name == "run_reindexing":
+        return {}
+    return {}
+
 
 @cron_app.command("add")
 def cron_add(
     name: str = typer.Argument(..., help="Unique name for the task"),
-    schedule: str = typer.Argument(..., help="Schedule string (e.g., 'every 10 seconds', 'daily')"),
-    prompt: str = typer.Argument(..., help="The prompt to run")
+    func_name: str = typer.Option(None, "--func", "-f", help="Function name (run_thinking_agent, run_reindexing)"),
+    schedule: str = typer.Option(None, "--schedule", "-s", help="Schedule string (e.g., 'every 10 seconds', 'daily')"),
+    prompt: Optional[str] = typer.Option(None, "--prompt", "-p", help="Prompt for run_thinking_agent"),
 ):
-    """Add a new thinking task."""
-    TaskManager().add_task(name, prompt, schedule)
+    if func_name is None:
+        console.print("\n[cyan]Available task types:[/cyan]")
+        console.print("  [1] run_thinking_agent - Execute thinking task")
+        console.print("  [2] run_reindexing     - Reindex memory files")
+        choice = Prompt.ask("[cyan]Select task type[/cyan]", choices=list(TASK_CHOICES.keys()), default="1")
+        func_name = TASK_CHOICES[choice]
+    
+    if schedule is None:
+        console.print("\n[dim]Schedule formats:[/dim]")
+        console.print("  • every N seconds/minutes/hours/days  (e.g., 'every 10 minutes')")
+        console.print("  • daily")
+        console.print("  • cron: * * * * *  (standard cron expression)")
+        schedule = Prompt.ask("[cyan]Schedule[/cyan]")
+    
+    kwargs = {}
+    if func_name == "run_thinking_agent":
+        if prompt is None:
+            prompt = Prompt.ask("[cyan]Prompt[/cyan]")
+        kwargs = {"prompt": prompt}
+    
+    TaskManager().add_task(name, func_name, kwargs, schedule)
+
 
 @cron_app.command("remove")
 def cron_remove(name: str):
-    """Remove a thinking task."""
     TaskManager().remove_task(name)
+
 
 @cron_app.command("list")
 def cron_list():
-    """List all thinking tasks."""
     TaskManager().list_tasks()
 
+
+@cron_app.command("start")
+def cron_start():
+    asyncio.run(start_scheduler())
+
+
 def cron_interactive():
-    """Interactive mode for cron management."""
     console.print(Panel("[bold green]Cron Task Manager - Interactive Mode[/bold green]", border_style="green"))
     
     while True:
@@ -54,21 +91,25 @@ def cron_interactive():
             console.print("\n[bold]--- Add New Task ---[/bold]")
             name = Prompt.ask("[cyan]Task name[/cyan]")
             
+            console.print("\n[cyan]Available task types:[/cyan]")
+            console.print("  [1] run_thinking_agent - Execute thinking task")
+            console.print("  [2] run_reindexing     - Reindex memory files")
+            func_choice = Prompt.ask("[cyan]Select task type[/cyan]", choices=list(TASK_CHOICES.keys()), default="1")
+            func_name = TASK_CHOICES[func_choice]
+            
             console.print("\n[dim]Schedule formats:[/dim]")
             console.print("  • every N seconds/minutes/hours/days  (e.g., 'every 10 minutes')")
             console.print("  • daily")
             console.print("  • cron: * * * * *  (standard cron expression)")
             schedule = Prompt.ask("[cyan]Schedule[/cyan]")
             
-            prompt = Prompt.ask("[cyan]Prompt[/cyan]")
+            kwargs = _get_task_params(func_name)
             
             enabled = Confirm.ask("[cyan]Enable task now?[/cyan]", default=True)
             
             manager = TaskManager()
-            if enabled:
-                manager.add_task(name, prompt, schedule)
-            else:
-                manager.add_task(name, prompt, schedule)
+            manager.add_task(name, func_name, kwargs, schedule)
+            if not enabled:
                 tasks = manager.load_tasks()
                 for t in tasks:
                     if t.name == name:
@@ -88,13 +129,13 @@ def cron_interactive():
             console.print("\n[cyan]Existing tasks:[/cyan]")
             for i, t in enumerate(tasks, 1):
                 status = "[green]●[/green]" if t.enabled else "[red]○[/red]"
-                console.print(f"  [{i}] {status} {t.name} ({t.schedule})")
+                console.print(f"  [{i}] {status} {t.name} - {t.func_name} ({t.schedule})")
             
             choices = [str(i) for i in range(1, len(tasks) + 1)] + ["q"]
-            choice = Prompt.ask("\n[cyan]Select task to remove[/cyan] (or 'q' to cancel)", choices=choices, default="q")
+            task_choice = Prompt.ask("\n[cyan]Select task to remove[/cyan] (or 'q' to cancel)", choices=choices, default="q")
             
-            if choice != "q":
-                idx = int(choice) - 1
+            if task_choice != "q":
+                idx = int(task_choice) - 1
                 manager.remove_task(tasks[idx].name)
         
         elif choice == "3":

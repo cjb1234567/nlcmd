@@ -11,28 +11,46 @@ from rich.console import Console
 from rich.table import Table
 
 from nlcmd import config
+from nlcmd.cron.tasks import TASK_FUNCS
 
 console = Console()
 
-class ThinkingTask(BaseModel):
+
+class Task(BaseModel):
     name: str
-    prompt: str
+    func_name: str
+    kwargs: dict = {}
     schedule: str
     enabled: bool = True
+
+    async def run(self):
+        func = TASK_FUNCS.get(self.func_name)
+        if func is None:
+            console.print(f"[red]Unknown function: {self.func_name}[/red]")
+            return
+        try:
+            await func(**self.kwargs)
+        except Exception as e:
+            console.print(f"[red]Error running task '{self.name}': {e}[/red]")
+
 
 def _escape_toml_string(s: str) -> str:
     return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
 
-def _dump_tasks_to_toml(tasks: List[ThinkingTask]) -> str:
+
+def _dump_tasks_to_toml(tasks: List[Task]) -> str:
+    import json
     lines = []
     for task in tasks:
         lines.append("[[tasks]]")
         lines.append(f'name = "{_escape_toml_string(task.name)}"')
+        lines.append(f'func_name = "{_escape_toml_string(task.func_name)}"')
+        lines.append(f'kwargs = \'{json.dumps(task.kwargs)}\'')
         lines.append(f'schedule = "{_escape_toml_string(task.schedule)}"')
-        lines.append(f'prompt = "{_escape_toml_string(task.prompt)}"')
         lines.append(f'enabled = {"true" if task.enabled else "false"}')
         lines.append("")
     return "\n".join(lines)
+
 
 class TaskManager:
     def __init__(self):
@@ -47,19 +65,25 @@ class TaskManager:
             with open(self.config_file, "w", encoding="utf-8") as f:
                 f.write("")
 
-    def load_tasks(self) -> List[ThinkingTask]:
+    def load_tasks(self) -> List[Task]:
+        import json
         try:
             with open(self.config_file, "rb") as f:
                 try:
                     data = tomllib.load(f)
-                    return [ThinkingTask(**t) for t in data.get("tasks", [])]
+                    tasks = []
+                    for t in data.get("tasks", []):
+                        if isinstance(t.get("kwargs"), str):
+                            t["kwargs"] = json.loads(t["kwargs"])
+                        tasks.append(Task(**t))
+                    return tasks
                 except tomllib.TOMLDecodeError:
                     return []
         except Exception as e:
             console.print(f"[red]Error loading tasks: {e}[/red]")
             return []
 
-    def save_tasks(self, tasks: List[ThinkingTask]):
+    def save_tasks(self, tasks: List[Task]):
         try:
             content = _dump_tasks_to_toml(tasks)
             with open(self.config_file, "w", encoding="utf-8") as f:
@@ -67,13 +91,13 @@ class TaskManager:
         except Exception as e:
             console.print(f"[red]Error saving tasks: {e}[/red]")
 
-    def add_task(self, name: str, prompt: str, schedule: str):
+    def add_task(self, name: str, func_name: str, kwargs: dict, schedule: str):
         tasks = self.load_tasks()
         if any(t.name == name for t in tasks):
             console.print(f"[red]Task with name '{name}' already exists.[/red]")
             return
         
-        new_task = ThinkingTask(name=name, prompt=prompt, schedule=schedule)
+        new_task = Task(name=name, func_name=func_name, kwargs=kwargs, schedule=schedule)
         tasks.append(new_task)
         self.save_tasks(tasks)
         console.print(f"[green]Task '{name}' added successfully.[/green]")
@@ -94,30 +118,21 @@ class TaskManager:
             console.print("No tasks found.")
             return
 
-        table = Table(title="Thinking Tasks")
+        table = Table(title="Tasks")
         table.add_column("Name", style="cyan")
+        table.add_column("Function", style="blue")
+        table.add_column("Kwargs", style="green")
         table.add_column("Schedule", style="magenta")
-        table.add_column("Prompt", style="green")
         table.add_column("Enabled", style="yellow")
 
         for task in tasks:
-            table.add_row(task.name, task.schedule, task.prompt, str(task.enabled))
+            table.add_row(task.name, task.func_name, str(task.kwargs), task.schedule, str(task.enabled))
         
         console.print(table)
 
+
 scheduler = AsyncIOScheduler()
 
-async def run_thinking_agent(prompt: str):
-    try:
-        from nlcmd.llm import CommandGenerator
-        generator = CommandGenerator()
-        console.print(f"[bold blue]Running thinking task:[/bold blue] {prompt}")
-        
-        response = await generator.run_task(prompt, dry_run=False)
-        
-        console.print(f"[bold green]Task completed:[/bold green]\n{response}")
-    except Exception as e:
-        console.print(f"[bold red]Error running thinking task:[/bold red] {e}")
 
 def parse_trigger(schedule_str: str):
     schedule_str = schedule_str.lower().strip()
@@ -138,6 +153,7 @@ def parse_trigger(schedule_str: str):
 
     raise ValueError(f"Unsupported schedule format: {schedule_str}")
 
+
 async def start_scheduler():
     manager = TaskManager()
     tasks = manager.load_tasks()
@@ -150,10 +166,9 @@ async def start_scheduler():
             try:
                 trigger = parse_trigger(task.schedule)
                 scheduler.add_job(
-                    run_thinking_agent,
+                    task.run,
                     trigger,
-                    id=task.name,
-                    args=[task.prompt]
+                    id=task.name
                 )
                 console.print(f"[dim]Scheduled task '{task.name}' with schedule '{task.schedule}'[/dim]")
             except Exception as e:

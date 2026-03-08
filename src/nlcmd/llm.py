@@ -42,7 +42,7 @@ def build_system_prompt(deps: AgentState) -> str:
         f"The user's workspace directory is: {deps.workspace}\n"
         f"Current date and time: {now.strftime('%Y-%m-%d %H:%M:%S')} ({now.strftime('%A')})\n"
         "All file operations should be relative to this workspace unless an absolute path is specified.\n"
-        "You have access to tools to execute shell commands ('run_shell_command'), propose options ('propose_options'), write files ('write_file'), save memories ('save_memory'), recall memories ('recall_memory'), and manage skills.\n"
+        "You have access to tools to execute shell commands ('run_shell_command'), propose options ('propose_options'), write files ('write_file'), add memories ('add_memory'), recall memories ('recall_memory'), edit memories ('edit_memory'), and manage skills.\n"
         "Workflow:\n"
         "1. Analyze the user's request.\n"
         "2. If the request references people, preferences, or past context -> Call `recall_memory` FIRST to check if relevant information exists.\n"
@@ -50,9 +50,9 @@ def build_system_prompt(deps: AgentState) -> str:
         "4. If the request is ambiguous -> Call `propose_options` with possible commands.\n"
         "5. If the request is still vague after checking memory -> Ask the user for clarification (text response).\n"
         "6. If a skill is relevant -> Use `load_skill` and follow the skill instructions.\n"
-        "7. To save a memory:\n"
+        "7. To add a memory:\n"
         "   a. Call `list_memories` to check existing categories.\n"
-        "   b. Call `save_memory` to append to an existing category(preferrably) OR create a new one.\n"
+        "   b. Call `add_memory` to append to an existing category(preferrably) OR create a new one.\n"
         "8. To recall a memory -> Call `recall_memory` with a relevant query.\n"
         "IMPORTANT: When calling a tool, do NOT output any conversational text. Just call the tool.\n"
         "\n## Memory-First Policy:\n"
@@ -143,9 +143,9 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
             return f"Error writing file: {str(e)}"
 
     @agent.tool
-    async def list_memories(ctx: RunContext[AgentState], memory_type: Literal["important", "normal"]) -> str:
+    async def list_memories(ctx: RunContext[AgentState], memory_type: Literal["important", "temp"] = "important") -> str:
         """
-        List existing memory files for a specific type (important/normal).
+        List existing memory files for a specific type (important/temp).
         Use this BEFORE saving a new memory to check if a relevant memory file already exists.
         
         Returns:
@@ -179,9 +179,9 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
             return f"Error listing memories: {str(e)}"
 
     @agent.tool
-    async def save_memory(ctx: RunContext[AgentState], content: str, memory_type: Literal["important", "normal"], category_name: str, description: str = "") -> str:
+    async def add_memory(ctx: RunContext[AgentState], content: str, memory_type: Literal["important", "temp"], category_name: str, description: str = "") -> str:
         """
-        Save a memory about the user or task.
+        Add a new memory entry to a memory file.
         
         Workflow:
         1. Call `list_memories` first to see existing categories.
@@ -189,8 +189,8 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
         3. If no suitable file exists, choose a new `category_name` (e.g. `user_preference`, `project_context`).
         
         Args:
-            content: The detailed content to append.
-            memory_type: "important" or "normal".
+            content: The detailed content(pure text) to append.
+            memory_type: "important" or "temp" (default: "important").
             category_name: The category identifier (used as filename, e.g. "user_preference"). 
                            Do NOT include date or extension.
             description: Description of this memory category (required only when creating a NEW file).
@@ -231,13 +231,13 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
                     }
                     await ctx.deps.memory_indexer.index_memory_async(full_entry, metadata)
                 except Exception as e:
-                    return f"Memory saved to file, but indexing failed: {str(e)}"
+                    return f"Memory added to file, but indexing failed: {str(e)}"
 
             status = "Created new" if is_new_file else "Appended to"
             return f"Successfully {status} memory file: {file_path.relative_to(workspace_path)}"
             
         except Exception as e:
-            return f"Error saving memory: {str(e)}"
+            return f"Error adding memory: {str(e)}"
 
     @agent.tool
     async def recall_memory(ctx: RunContext[AgentState], query: str, limit: int = 5) -> str:
@@ -275,6 +275,87 @@ def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
             return "\n".join(formatted_results)
         except Exception as e:
             return f"Error recalling memory: {str(e)}"
+
+    @agent.tool
+    async def edit_memory(
+        ctx: RunContext[AgentState], 
+        category_name: str, 
+        operation: Literal["replace", "delete", "append", "rewrite"],
+        target: str = "",
+        new_content: str = "",
+        memory_type: Literal["important", "temp"] = "important"
+    ) -> str:
+        """
+        Edit a memory file with various operations.
+        
+        Args:
+            category_name: The category identifier (filename without extension, e.g. "user_preference").
+            operation: The edit operation to perform:
+                - "replace": Replace text matching `target` with `new_content`
+                - "delete": Delete text matching `target`
+                - "append": Append `new_content` as a new dated entry at the end
+                - "rewrite": Replace entire file content with `new_content`
+            target: The text to find (for replace/delete operations). Use partial text to match.
+            new_content: The new content (for replace/append/rewrite operations).
+            memory_type: "important" or "temp" (default: "important").
+        
+        Returns:
+            Success message or error description.
+        """
+        try:
+            workspace_path = await anyio.Path(ctx.deps.workspace).resolve()
+            safe_name = "".join(c for c in category_name if c.isalnum() or c in ('_', '-')).strip()
+            if not safe_name:
+                return "Error: Invalid category_name"
+            
+            file_path = workspace_path / "memory" / memory_type / f"{safe_name}.md"
+            
+            if not await file_path.exists():
+                return f"Error: Memory file '{safe_name}.md' not found in {memory_type}/"
+            
+            content = await file_path.read_text(encoding='utf-8')
+            
+            if operation == "rewrite":
+                if not new_content:
+                    return "Error: new_content is required for rewrite operation"
+                await file_path.write_text(new_content, encoding='utf-8')
+                return f"Successfully rewrote entire file: {safe_name}.md"
+            
+            elif operation == "append":
+                if not new_content:
+                    return "Error: new_content is required for append operation"
+                today = datetime.now().strftime("%Y-%m-%d")
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                entry_header = f"### [{today} {timestamp}]"
+                full_entry = f"\n{entry_header}\n{new_content}\n"
+                async with await anyio.open_file(file_path, 'a', encoding='utf-8') as f:
+                    await f.write(full_entry)
+                return f"Successfully appended new entry to: {safe_name}.md"
+            
+            elif operation == "replace":
+                if not target:
+                    return "Error: target is required for replace operation"
+                if target not in content:
+                    return f"Error: Target text not found in {safe_name}.md"
+                new_file_content = content.replace(target, new_content, 1)
+                await file_path.write_text(new_file_content, encoding='utf-8')
+                return f"Successfully replaced text in: {safe_name}.md"
+            
+            elif operation == "delete":
+                if not target:
+                    return "Error: target is required for delete operation"
+                if target not in content:
+                    return f"Error: Target text not found in {safe_name}.md"
+                new_file_content = content.replace(target, "", 1)
+                new_file_content = new_file_content.replace("\n\n\n", "\n\n")
+                await file_path.write_text(new_file_content, encoding='utf-8')
+                return f"Successfully deleted text from: {safe_name}.md"
+            
+            else:
+                return f"Error: Unknown operation '{operation}'"
+                
+        except Exception as e:
+            return f"Error editing memory: {str(e)}"
 
     @agent.tool
     async def propose_options(ctx: RunContext[AgentState], options: List[Dict[str, str]]) -> str:

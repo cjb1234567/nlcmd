@@ -158,7 +158,7 @@ Second entry
     def test_handles_both_types(self, tmp_path):
         store = MemoryStore(str(tmp_path))
         
-        for mem_type in ["important", "normal"]:
+        for mem_type in ["important", "temp"]:
             memory_dir = tmp_path / "memory" / mem_type
             memory_dir.mkdir(parents=True)
             file_path = memory_dir / f"{mem_type}.md"

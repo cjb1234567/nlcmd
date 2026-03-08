@@ -7,6 +7,12 @@
   - **持久化存储**：重要信息自动记录为 Markdown 文件，方便查阅。
   - **语义检索**：基于 `txtai` 和 `BAAI/bge-small-zh` 模型，支持自然语言模糊检索历史记忆。
   - **上下文保持**：自动记住用户偏好、常用配置和重要上下文，提升多轮交互体验。
+  - **记忆工具**：支持列出、添加、编辑、检索记忆，AI 可在思考过程中动态管理记忆内容。
+- **定时任务系统 (Cron Scheduler)**：
+  - **任务调度**：支持间隔调度（如每 10 分钟）和 cron 表达式（如 `0 9 * * *`）
+  - **思考任务**：定时执行 AI 思考任务，自动处理复杂工作流
+  - **索引重建**：定时检测记忆文件变化并重建语义索引，保持检索准确性
+  - **交互式管理**：通过 CLI 添加、删除、查看定时任务
 - **交互式流程**：
   - 单命令执行前确认 Y/n，可选 `--dry-run` 只展示不执行
   - 多选项场景支持输入序号选择
@@ -57,7 +63,14 @@ nlcmd/
 │       ├── llm.py       # Agent 定义
 │       ├── config.py    # 配置管理
 │       ├── utils.py     # 命令执行
-│       └── ui.py        # 控制台输出
+│       ├── ui.py        # 控制台输出
+│       ├── cron/        # 定时任务模块
+│       │   ├── cli.py       # 定时任务 CLI
+│       │   ├── scheduler.py # 任务调度器
+│       │   └── tasks.py     # 任务函数定义
+│       └── memory/      # 记忆模块
+│           ├── store.py     # 记忆存储
+│           └── indexer.py   # 语义索引
 ├── skills/              # 技能目录
 │   ├── canvas-design/   # Canvas 设计技能
 │   ├── docx/            # Word 文档技能
@@ -70,7 +83,7 @@ nlcmd/
 ```
 
 ## 环境要求
-- Python 3.10+
+- Python 3.11+
 - uv (推荐)
 - 可访问的 OpenAI 兼容接口
 
@@ -143,6 +156,38 @@ nlcmd "查看当前目录下各文件夹大小"
 - 目录不存在时自动创建
 - 创建失败（权限不足/路径无效）时中断执行并报错
 
+## 定时任务
+
+通过 `nlcmd cron` 子命令管理定时任务：
+
+```bash
+# 添加定时任务（交互式）
+uv run nlcmd cron add my-task
+
+# 添加定时任务（命令行参数）
+uv run nlcmd cron add daily-report --func run_thinking_agent --schedule "daily" --prompt "总结今日工作"
+
+# 列出所有任务
+uv run nlcmd cron list
+
+# 删除任务
+uv run nlcmd cron remove my-task
+
+# 启动调度器
+uv run nlcmd cron start
+```
+
+**任务类型**：
+| 任务名 | 说明 |
+|--------|------|
+| `run_thinking_agent` | 执行 AI 思考任务，需要提供 `prompt` 参数 |
+| `run_reindexing` | 检测记忆文件变化并重建语义索引 |
+
+**调度格式**：
+- 间隔调度：`every N seconds/minutes/hours/days`（如 `every 10 minutes`）
+- 每日调度：`daily`（每天执行一次）
+- Cron 表达式：`分 时 日 月 周`（如 `0 9 * * *` 表示每天 9:00）
+
 ## 开发
 
 **环境准备**：
@@ -176,6 +221,19 @@ uv build
 MIT License
 
 ## 更新日志
+
+### 2026-03-08：定时任务系统与记忆工具增强
+
+- **定时任务系统 (Cron Scheduler)**
+  - 新增 `nlcmd cron` 子命令，支持定时任务管理
+  - 支持间隔调度（`every N minutes`）和 cron 表达式
+  - 内置 `run_thinking_agent` 思考任务和 `run_reindexing` 索引重建任务
+  - 任务配置持久化到 `cron_tasks.toml`
+
+- **记忆工具增强**
+  - 新增 `edit_memory` 工具，支持替换、删除、追加、重写记忆内容
+  - `save_memory` 重命名为 `add_memory`，更准确描述其行为
+  - AI 可在思考过程中动态管理记忆文件
 
 ### 2026-03-04：稳定性与体验优化
 
