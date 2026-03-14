@@ -77,10 +77,10 @@ def build_system_prompt(deps: AgentState) -> str:
     
     return base
 
-def create_agent(model) -> Tuple[Agent[AgentState], SkillsToolset]:
+def create_agent(model, workspace) -> Tuple[Agent[AgentState], SkillsToolset]:
     skills_dir = Path(__file__).parent.parent.parent / 'skills'
-    
-    skills_toolset = SkillsToolset(directories=[skills_dir])
+    user_skills_dir = Path(workspace) / 'skills'
+    skills_toolset = SkillsToolset(directories=[skills_dir, user_skills_dir])
     
     agent = Agent(
         model, 
@@ -408,7 +408,7 @@ class CommandGenerator:
         self.shell_name = config.DEFAULT_SHELL
         self.workspace = workspace or str(config.WORKSPACE)
 
-        self.agent, self.skills_toolset = create_agent(self.model)
+        self.agent, self.skills_toolset = create_agent(self.model, self.workspace)
         self.message_history = []
 
     async def run_task(self, text: str, dry_run: bool = False, reasoning_callback: Optional[Callable[[str], None]] = None) -> Any:
@@ -427,6 +427,7 @@ class CommandGenerator:
             workspace=self.workspace,
             memory_indexer=memory_indexer
         )
+
         try:
             if config.SHOW_REASONING and reasoning_callback:
                 reasoning_callback("Generating system prompt...\n")

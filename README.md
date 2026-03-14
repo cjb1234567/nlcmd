@@ -222,6 +222,13 @@ MIT License
 
 ## 更新日志
 
+### 2026-03-14：用户 Skills 目录支持
+
+- **动态 Skills 加载**
+  - 支持从用户 workspace 目录加载自定义 skills
+  - SkillsToolset 同时扫描项目级 `skills/` 和用户级 `{workspace}/skills/` 目录
+  - 用户可在自己的工作空间中定义专属技能，无需修改项目代码
+
 ### 2026-03-08：定时任务系统与记忆工具增强
 
 - **定时任务系统 (Cron Scheduler)**
